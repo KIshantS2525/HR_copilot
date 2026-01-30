@@ -38,79 +38,61 @@ def validate_hr_question(user_message: str) -> dict:
     # ---------------- LLM PROMPT ----------------
     prompt = f"""
 You are an enterprise HR intent classifier.
-
-Task:
-Determine whether the message is related to Human Resources (HR).
-
-HR INCLUDES (but is not limited to):
-
+ 
+TASK:
+Classify if the user message is HR-related or not.
+ 
+HR SCOPE INCLUDES:
+ 
 1. Employee Lifecycle
-- Onboarding, Offboarding, Probation, Confirmation
-- Notice period, Exit interview, Employee ID
-- Full-time, Part-time, Contract, Intern
-
+   Onboarding, offboarding, probation, confirmation, notice period, exit interview, employee ID (Emp ID), FTE (Full-Time Employee), part-time employee, contractual/temporary employee, intern/trainee
+ 
 2. Recruitment & Hiring
-- Job description, Resume, Interview
-- Offer letter, CTC, DOJ, BGV, ATS
-- Hiring manager, Talent acquisition
-
+   JD (Job Description), job posting/vacancy, applicant/candidate, resume/CV (Curriculum Vitae), shortlisting, screening, interviews (HR/technical/managerial), offer letter, CTC (Cost to Company), DOJ (Date of Joining), BGV (Background Verification), reference check, hiring manager, TA (Talent Acquisition), ATS (Applicant Tracking System)
+ 
 3. Payroll & Compensation
-- Salary, Payslip, Bonus, Incentives
-- Gross/Net salary, HRA, Allowances
-- Reimbursement, Arrears, Payroll cycle
-
-4. Statutory & Compliance (India)
-- PF, ESI, PT, Gratuity
-- TDS, UAN, Form 16
-- Labor laws, Shops & Establishment
-
+   Salary/wages, CTC (Cost to Company), gross salary, net salary (take-home), basic pay, HRA (House Rent Allowance), special allowance, bonus, incentives, variable pay, payslip, payroll processing, salary cycle, reimbursement, arrears
+ 
+4. Statutory & Compliance (India-specific)
+   PF (Provident Fund), ESI (Employee State Insurance), PT (Professional Tax), gratuity, TDS (Tax Deducted at Source), UAN (Universal Account Number), Form 16, Form 12B/12BB, labor law compliance, Shops & Establishment Act
+ 
 5. Leave & Attendance
-- Leave policy, CL, SL, EL, PL
-- Maternity / Paternity leave
-- LOP, WFH, Attendance, Timesheet
-
+   Leave policy, CL (Casual Leave), SL (Sick Leave), EL (Earned Leave)/PL (Privilege Leave), elective/optional leave, paid leave, maternity/paternity leave, comp-off (Compensatory Off), LOP (Loss of Pay), WFH (Work From Home), attendance regularization, biometric attendance, timesheet
+ 
 6. Performance & Growth
-- KPI, KRA, Appraisal, Promotion
-- Increment, PIP, OKR
-- Training, L&D
-
+   KPI (Key Performance Indicator), KRA (Key Result Area), performance appraisal, increment/hike, promotion, 360-degree feedback, PIP (Performance Improvement Plan), goal setting, OKR (Objectives and Key Results), L&D (Learning & Development), training programs
+ 
 7. Company Policy & Culture
-- HR policy, Code of conduct
-- POSH, Grievance, Whistleblower
-- Anti-harassment, Equal opportunity
-
+   Code of conduct, HR policy, POSH (Prevention of Sexual Harassment) policy, disciplinary action, grievance redressal, whistleblower policy, anti-harassment policy, equal opportunity policy
+ 
 8. Separation & Exit
-- Resignation, Termination
-- Relieving letter, Experience letter
-- Full & Final settlement, NOC
-
-9. HR Metrics
-- Attrition, Retention, Headcount
-- Time to hire, Engagement, D&I
-
-10. HR Copilot Actions
-- Apply leave
-- Download payslip
-- Show CTC breakup
-- Explain PF deduction
-- Generate offer letter
-- Start onboarding
-- Appraisal cycle queries
-
-Also consider greetings (hi, hello, good morning) as HR-related.
-
+   Resignation, termination, layoff/retrenchment, absconding, relieving letter, experience letter, FNF (Full & Final Settlement), clearance process/NOC (No Objection Certificate)
+ 
+9. HR Metrics & Analytics
+   Attrition rate, retention rate, headcount, time to hire, cost per hire, employee engagement, absenteeism rate, D&I (Diversity & Inclusion)
+ 
+10. Common HR Queries & Actions
+    Leave balance check, apply for leave, download payslip, CTC breakup, explain PF/ESI/TDS deductions, generate offer/experience/relieving letters, start onboarding process, appraisal cycle queries, attendance regularization
+ 
+CLASSIFICATION RULES:
+- Greetings (hi, hello, good morning, namaste, etc.) → HR
+- Employee wellness, benefits, work-life balance, policies → HR
+- IT support, technical issues, facilities, non-HR admin → NON_HR
+- When uncertain but employee-facing, favor HR classification
+ 
 Respond ONLY in valid JSON.
 Do NOT add explanations.
-
+ 
 JSON format:
 {{
   "label": "HR" or "NON_HR",
   "confidence": number between 0 and 1
 }}
-
+ 
 Message:
 "{user_message}"
 """
+
 
     # ---------------- LLM CALL ----------------
     try:
