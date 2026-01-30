@@ -193,52 +193,319 @@
 # backend/retrieval.py
 # backend/retrieval.py
 
+# NO_RESULT_RESPONSE = {
+#     "text": "I am sorry, I am not able to help with this request. Please contact to hr@ascentt.com for further assistance.",
+#     "source": "system",
+#     "score": 0.0
+# }
+
+# def retrieve(query, index, chunks, sources, embedder, k=4, score_threshold=0.25):
+#     """Retrieve top-k most relevant chunks using vector similarity."""
+#     try:
+#         # Query ChromaDB - it handles everything including sorting
+#         results = index.query(
+#             query_texts=[query],  # Let ChromaDB handle the embedding internally
+#             n_results=k,
+#             include=["documents", "metadatas", "distances"]
+#         )
+#     except Exception as e:
+#         print(f"Error querying ChromaDB: {e}")
+#         return [NO_RESULT_RESPONSE]
+    
+#     # Check if we got results
+#     if not results or not results.get("documents") or not results["documents"][0]:
+#         return [NO_RESULT_RESPONSE]
+    
+#     # Process results (already sorted by ChromaDB)
+#     documents = results["documents"][0]
+#     metadatas = results.get("metadatas", [[]])[0]
+#     distances = results.get("distances", [[]])[0]
+    
+#     retrieved_results = []
+#     for i, doc in enumerate(documents):
+#         # Get source
+#         source = "unknown"
+#         if i < len(metadatas) and metadatas[i]:
+#             source = metadatas[i].get("source", "unknown")
+        
+#         # Convert distance to similarity score
+#         score = 0.5
+#         if i < len(distances):
+#             distance = distances[i]
+#             score = 1.0 / (1.0 + distance)
+        
+#         if score >= score_threshold:
+#             retrieved_results.append({
+#                 "text": doc,
+#                 "source": source,
+#                 "score": float(score)
+#             })
+    
+#     return retrieved_results if retrieved_results else [NO_RESULT_RESPONSE]
+
+# backend/retrieval.py
+from typing import List, Dict, Any, Optional
+import numpy as np
+
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_AVAILABLE = True
+except ImportError:
+    BM25_AVAILABLE = False
+    print("Warning: rank-bm25 not installed. Using dense search only.")
+
 NO_RESULT_RESPONSE = {
-    "text": "I am sorry, I am not able to help with this request. Please contact to hr@ascentt.com for further assistance.",
+    "text": "I am sorry, I am not able to help with this request. Please contact hr@ascentt.com for further assistance.",
     "source": "system",
     "score": 0.0
 }
 
-def retrieve(query, index, chunks, sources, embedder, k=4, score_threshold=0.25):
-    """Retrieve top-k most relevant chunks using vector similarity."""
-    try:
-        # Query ChromaDB - it handles everything including sorting
-        results = index.query(
-            query_texts=[query],  # Let ChromaDB handle the embedding internally
-            n_results=k,
-            include=["documents", "metadatas", "distances"]
-        )
-    except Exception as e:
-        print(f"Error querying ChromaDB: {e}")
-        return [NO_RESULT_RESPONSE]
+class HybridRetriever:
+    """Hybrid retriever combining dense vector search and BM25 keyword search."""
     
-    # Check if we got results
-    if not results or not results.get("documents") or not results["documents"][0]:
-        return [NO_RESULT_RESPONSE]
-    
-    # Process results (already sorted by ChromaDB)
-    documents = results["documents"][0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-    
-    retrieved_results = []
-    for i, doc in enumerate(documents):
-        # Get source
-        source = "unknown"
-        if i < len(metadatas) and metadatas[i]:
-            source = metadatas[i].get("source", "unknown")
+    def __init__(self, index, chunks: List[str], sources: List[str], embedder):
+        self.index = index  # ChromaDB/FAISS index for dense vectors
+        self.chunks = chunks
+        self.sources = sources
+        self.embedder = embedder
         
-        # Convert distance to similarity score
-        score = 0.5
-        if i < len(distances):
-            distance = distances[i]
-            score = 1.0 / (1.0 + distance)
+        # Initialize BM25 only if we have chunks and package is available
+        self.bm25 = None
+        if BM25_AVAILABLE and chunks and len(chunks) > 0:
+            self.tokenized_chunks = [self._tokenize(chunk) for chunk in chunks]
+            # Filter out empty tokenized chunks
+            self.tokenized_chunks = [tc for tc in self.tokenized_chunks if tc]
+            if self.tokenized_chunks:
+                self.bm25 = BM25Okapi(self.tokenized_chunks)
+                print(f"BM25 initialized with {len(self.tokenized_chunks)} chunks")
+            else:
+                print("Warning: No valid chunks for BM25 initialization")
+        else:
+            if not BM25_AVAILABLE:
+                print("BM25 not available, using dense search only")
+            else:
+                print(f"Warning: Empty chunks list ({len(chunks)} chunks)")
+    
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenizer for BM25."""
+        if not text or not text.strip():
+            return []
+        return text.lower().split()
+    
+    def _bm25_search(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
+        """Perform BM25 keyword search."""
+        if not self.bm25 or not query or not query.strip():
+            return []
         
-        if score >= score_threshold:
-            retrieved_results.append({
+        tokenized_query = self._tokenize(query)
+        if not tokenized_query:
+            return []
+        
+        try:
+            scores = self.bm25.get_scores(tokenized_query)
+            # Get top-k BM25 results
+            bm25_indices = np.argsort(scores)[::-1][:k]
+            
+            results = []
+            for idx in bm25_indices:
+                if scores[idx] > 0 and idx < len(self.chunks):  # Only include relevant results
+                    results.append({
+                        "text": self.chunks[idx],
+                        "source": self.sources[idx] if idx < len(self.sources) else "unknown",
+                        "score": float(scores[idx]),
+                        "type": "bm25"
+                    })
+            return results
+        except Exception as e:
+            print(f"Error in BM25 search: {e}")
+            return []
+    
+    def _dense_search(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
+        """Perform dense vector search using ChromaDB."""
+        if not query or not query.strip():
+            return []
+            
+        try:
+            results = self.index.query(
+                query_texts=[query],
+                n_results=k,
+                include=["documents", "metadatas", "distances"]
+            )
+        except Exception as e:
+            print(f"Error querying ChromaDB: {e}")
+            return []
+        
+        if not results or not results.get("documents") or not results["documents"][0]:
+            return []
+        
+        documents = results["documents"][0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        
+        dense_results = []
+        for i, doc in enumerate(documents):
+            source = "unknown"
+            if i < len(metadatas) and metadatas[i]:
+                source = metadatas[i].get("source", "unknown")
+            
+            # Convert distance to similarity score
+            score = 0.5
+            if i < len(distances):
+                distance = distances[i]
+                if distance is not None:
+                    score = 1.0 / (1.0 + distance)
+            
+            dense_results.append({
                 "text": doc,
                 "source": source,
-                "score": float(score)
+                "score": float(score),
+                "type": "dense"
             })
+        
+        return dense_results
     
-    return retrieved_results if retrieved_results else [NO_RESULT_RESPONSE]
+    def retrieve(self, query: str, k: int = 8, score_threshold: float = 0.25, 
+                 alpha: float = 0.7) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search with reciprocal rank fusion.
+        
+        Args:
+            query: Search query
+            k: Number of results to return
+            score_threshold: Minimum score threshold
+            alpha: Weight for dense vs sparse (0.5 = equal, >0.5 = dense favored)
+        """
+        if not query or not query.strip():
+            return [NO_RESULT_RESPONSE]
+        
+        # Get results from both methods
+        dense_results = self._dense_search(query, k * 2)
+        bm25_results = self._bm25_search(query, k * 2) if self.bm25 else []
+        
+        if not dense_results and not bm25_results:
+            # Fallback: try pure dense search if hybrid fails
+            print("Hybrid search failed, trying pure dense search...")
+            return self._fallback_search(query, k, score_threshold)
+        
+        # If only one method has results, use it directly
+        if not dense_results:
+            print("Only BM25 results available")
+            final_results = bm25_results
+        elif not bm25_results:
+            print("Only dense results available")
+            final_results = dense_results
+        else:
+            # Combine results using Reciprocal Rank Fusion (RRF)
+            print(f"Combining {len(dense_results)} dense + {len(bm25_results)} BM25 results")
+            final_results = self._combine_results_rrf(dense_results, bm25_results, k)
+        
+        # Filter by threshold and return
+        filtered_results = []
+        for result in final_results[:k]:
+            if result["score"] >= score_threshold:
+                filtered_results.append({
+                    "text": result["text"],
+                    "source": result["source"],
+                    "score": float(result["score"])
+                })
+        
+        if filtered_results:
+            print(f"Hybrid search returned {len(filtered_results)} results")
+            return filtered_results
+        
+        return [NO_RESULT_RESPONSE]
+    
+    def _combine_results_rrf(self, dense_results: List[Dict], bm25_results: List[Dict], 
+                            k: int) -> List[Dict]:
+        """Combine dense and BM25 results using Reciprocal Rank Fusion."""
+        combined_results = {}
+        
+        # Process dense results
+        for rank, result in enumerate(dense_results, 1):
+            key = (result["text"], result["source"])
+            if key not in combined_results:
+                combined_results[key] = result.copy()
+                combined_results[key]["combined_score"] = 0
+                combined_results[key]["ranks"] = []
+            combined_results[key]["ranks"].append(rank)
+        
+        # Process BM25 results
+        for rank, result in enumerate(bm25_results, 1):
+            key = (result["text"], result["source"])
+            if key not in combined_results:
+                combined_results[key] = result.copy()
+                combined_results[key]["combined_score"] = 0
+                combined_results[key]["ranks"] = []
+            combined_results[key]["ranks"].append(rank)
+        
+        # Calculate RRF scores (k=60 as per standard RRF)
+        for result in combined_results.values():
+            rrf_score = 0
+            for rank in result["ranks"]:
+                rrf_score += 1.0 / (rank + 60)
+            result["combined_score"] = rrf_score
+            result["score"] = rrf_score  # Update main score for sorting
+        
+        # Sort by combined score
+        return sorted(combined_results.values(), 
+                     key=lambda x: x["combined_score"], 
+                     reverse=True)[:k]
+    
+    def _fallback_search(self, query: str, k: int, score_threshold: float) -> List[Dict[str, Any]]:
+        """Fallback to simple dense search when hybrid fails."""
+        try:
+            results = self.index.query(
+                query_texts=[query],
+                n_results=k,
+                include=["documents", "metadatas", "distances"]
+            )
+        except Exception as e:
+            print(f"Fallback search error: {e}")
+            return [NO_RESULT_RESPONSE]
+        
+        if not results or not results.get("documents") or not results["documents"][0]:
+            return [NO_RESULT_RESPONSE]
+        
+        documents = results["documents"][0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        
+        retrieved_results = []
+        for i, doc in enumerate(documents):
+            source = "unknown"
+            if i < len(metadatas) and metadatas[i]:
+                source = metadatas[i].get("source", "unknown")
+            
+            score = 0.5
+            if i < len(distances):
+                distance = distances[i]
+                if distance is not None:
+                    score = 1.0 / (1.0 + distance)
+            
+            if score >= score_threshold:
+                retrieved_results.append({
+                    "text": doc,
+                    "source": source,
+                    "score": float(score)
+                })
+        
+        return retrieved_results if retrieved_results else [NO_RESULT_RESPONSE]
+
+
+def retrieve(query, index, chunks, sources, embedder, k=4, score_threshold=0.25):
+    """Legacy function wrapper for backward compatibility."""
+    # Ensure chunks and sources are valid
+    if not chunks or len(chunks) == 0:
+        print("Warning: Empty chunks list passed to retrieve")
+        # Try to get chunks from index
+        try:
+            if hasattr(index, 'get'):
+                res = index.get(include=["documents", "metadatas"])
+                chunks = res.get("documents", [])
+                sources = [m.get("source", "unknown") for m in res.get("metadatas", [])]
+                print(f"Retrieved {len(chunks)} chunks from index")
+        except:
+            pass
+    
+    retriever = HybridRetriever(index, chunks or [], sources or [], embedder)
+    return retriever.retrieve(query, k=k, score_threshold=score_threshold)
